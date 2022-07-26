@@ -1,33 +1,40 @@
 import numpy as np 
 import torch
 
-def confs_average(points, confs):
+def preds_to_confs(preds):
+    confs = torch.softmax(preds, 1)  # (batchsize, nclasses, npoints)
+    return confs.amax(1)
+
+def confs_average(points, confs, clip_percentage=0.1):
+    assert (1 / clip_percentage) % 10 == 0, clip_percentage
+    assert len(points.shape) == 3, points.shape
+    assert points.shape[1] == 3, points.shape
+    assert len(confs.shape) == 2, confs.shape
     Xmin= torch.min(points[:,0,:])
     Xmax= torch.max(points[:,0,:])
     Ymin= torch.min(points[:,1,:])
     Ymax= torch.max(points[:,1,:])
     Zmin= torch.min(points[:,2,:])
     Zmax= torch.max(points[:,2,:])
-    rect=torch.zeros(points.shape[0], 10,10,10)
-    Xstep=(Xmax-Xmin)/10         
-    Ystep=(Ymax-Ymin)/10
-    Zstep=(Zmax-Zmin)/10
+    rect=torch.zeros(points.shape[0], int(1/clip_percentage), int(1/clip_percentage), int(1/clip_percentage))
+    points_per_region = {}
+    Xstep = (Xmax-Xmin) * clip_percentage         
+    Ystep = (Ymax-Ymin) * clip_percentage
+    Zstep = (Zmax-Zmin) * clip_percentage
     #msk= torch.logical_and(points[:,0,:]>=Xmin,points[:,0,:]<Xmin+Xstep)              
     #PTS_temp=points[msk]
     n = 0
-    for i, x in enumerate(torch.arange(Xmin,Xmax,Xstep)):
-        for j, y in enumerate(torch.arange(Ymin,Ymax,Ystep)):
-            for k, z in enumerate(torch.arange(Zmin,Zmax,Zstep)):
+    for i, x in enumerate(torch.arange(Xmin, Xmax-1e-6, Xstep)):
+        for j, y in enumerate(torch.arange(Ymin, Ymax-1e-6, Ystep)):
+            for k, z in enumerate(torch.arange(Zmin, Zmax-1e-6, Zstep)):
                 msk = torch.logical_and(torch.logical_and((torch.logical_and
                     (points[:,0,:]>=x,points[:,0,:]<x+Xstep)),
                     (torch.logical_and(points[:,1,:]>=y, points[:,1,:]<y+Ystep))),
                     torch.logical_and(points[:,2,:]>=z, points[:,2,:]<z+Zstep))
                 for batchi in range(points.shape[0]):
                     rect[batchi, i, j, k] = confs[batchi][msk[batchi]].mean()
-
-        #print("pt temp:", PTS_temp.shape, PTS_temp)
-    print("n:", n, points.shape)
-    return rect
+                    points_per_region[(batchi, i, j, k)] = msk
+    return rect, points_per_region
 
 def draw_confidence(conf_rect):
     import matplotlib.pyplot as plt

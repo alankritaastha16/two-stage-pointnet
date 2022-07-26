@@ -12,6 +12,8 @@ parser.add_argument('--npoints', default=2500, type=int)
 parser.add_argument('--feature-transform', action='store_true')
 parser.add_argument('--cache', action='store_true')
 parser.add_argument('--small', action='store_true')
+parser.add_argument('--big-model')
+parser.add_argument('--region-strategy')
 args = parser.parse_args()
 
 from torchinfo import summary
@@ -28,10 +30,17 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print('Using', device)
 
 # load the dataset with augmentation
+
+if args.big_model:
+    big_model = torch.load(args.big_model)
+
 if args.small:
+    if args.region_strategy == 'random-clip':
+        region_clip = myaug.RandomClip(0.1)
+    if args.region_strategy == 'hardest-region':
+        region_clip = myaug.HardestRegionModel(0.1, big_model, 0.5)
     aug = pn.aug.Compose(
-        myaug.RandomClip(0.1),
-        #pn.aug.HardestRegionModel(big_model),
+        region_clip,
         pn.aug.Resample(args.npoints),
         pn.aug.Normalize(),
         pn.aug.Jitter(),
@@ -50,7 +59,8 @@ K = tr.nclasses
 if args.cache:
     tr = pn.data.Cache(tr, aug)
 #tr = torch.utils.data.Subset(tr, range(10))  # DEBUG
-tr = DataLoader(tr, 32, True, num_workers=4, pin_memory=True)
+num_workers = 0 if args.region_strategy == 'hardest-region' else 4
+tr = DataLoader(tr, 32, True, num_workers=num_workers, pin_memory=True)
 
 # create the model
 model = pn.pointnet.PointNetSeg(K).to(device)
@@ -99,4 +109,8 @@ for epoch in range(args.epochs):
     #print('IoU:', pn.metrics.IoU(KK_pred, KK, K).cpu().numpy())
     print('mIoU:', pn.metrics.mIoU(KK_pred, KK, K).cpu().numpy())
 
-torch.save(model, f'model-{args.dataset}-{"small" if args.small else "big"}.pth')
+if args.small:
+    fname = f'model-{args.dataset}-small-{args.region_strategy}.pth'
+else:
+    fname = f'model-{args.dataset}.pth'
+torch.save(model, fname)
