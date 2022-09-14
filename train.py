@@ -15,7 +15,7 @@ parser.add_argument('--small', action='store_true')
 parser.add_argument('--big-model')
 parser.add_argument('--region-strategy')
 args = parser.parse_args()
-
+    
 from torchinfo import summary
 from torch.utils.data import DataLoader
 import torch
@@ -24,6 +24,7 @@ from time import time
 from tqdm import tqdm
 import numpy as np
 import pnets as pn
+import pointnet
 import myaug
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -38,11 +39,11 @@ if args.small:
     if args.region_strategy == 'random-clip':
         region_clip = myaug.RandomClip(0.1)
     if args.region_strategy == 'hardest-region':
-        region_clip = myaug.HardestRegionModel(0.1, big_model, 0.5)
+        region_clip = myaug.HardestRegion(0.1, big_model)
     aug = pn.aug.Compose(
+        pn.aug.Normalize(),
         region_clip,
         pn.aug.Resample(args.npoints),
-        pn.aug.Normalize(),
         pn.aug.Jitter(),
         pn.aug.RandomRotation('Z', 0, 2*np.pi),
     )
@@ -63,9 +64,9 @@ num_workers = 0 if args.region_strategy == 'hardest-region' else 4
 tr = DataLoader(tr, 32, True, num_workers=num_workers, pin_memory=True)
 
 # create the model
-model = pn.pointnet.PointNetSeg(K).to(device)
+model = pointnet.PointNetSeg(K).to(device)
 summary(model)
-print('model output:', model(torch.ones((10, 3, 2500), device=device))[0].shape)
+#print('model output:', model(torch.ones((10, 3, 2500), device=device))[0].shape)
 
 opt = torch.optim.Adam(model.parameters(), 1e-3)
 ce_loss = torch.nn.CrossEntropyLoss()
