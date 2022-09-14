@@ -40,9 +40,9 @@ if args.small:
     if args.region_strategy == 'hardest-region':
         region_clip = myaug.HardestRegionModel(0.1, big_model, 0.5)
     aug = pn.aug.Compose(
+        pn.aug.Normalize(),
         region_clip,
         pn.aug.Resample(args.npoints),
-        pn.aug.Normalize(),
         pn.aug.Jitter(),
         pn.aug.RandomRotation('Z', 0, 2*np.pi),
     )
