@@ -5,8 +5,8 @@ def preds_to_confs(preds):
     confs = torch.softmax(preds, 1)  # (batchsize, nclasses, npoints)
     return confs.amax(1)
 
-def confs_average(points, confs, clip_percentage=0.1):
-    assert (1 / clip_percentage) % 10 == 0, clip_percentage
+def confs_average(points, confs, clip_percentage):
+    assert (1/clip_percentage) % 1 == 0, clip_percentage
     assert len(points.shape) == 3, points.shape
     assert points.shape[1] == 3, points.shape
     assert len(confs.shape) == 2, confs.shape
@@ -17,6 +17,8 @@ def confs_average(points, confs, clip_percentage=0.1):
     Zmin= torch.min(points[:,2,:])
     Zmax= torch.max(points[:,2,:])
     rect=torch.zeros(points.shape[0], int(1/clip_percentage), int(1/clip_percentage), int(1/clip_percentage))
+    xyz_start={}
+    xyz_end={}
     points_per_region = {}
     Xstep = (Xmax-Xmin) * clip_percentage         
     Ystep = (Ymax-Ymin) * clip_percentage
@@ -33,8 +35,10 @@ def confs_average(points, confs, clip_percentage=0.1):
                     torch.logical_and(points[:,2,:]>=z, points[:,2,:]<z+Zstep))
                 for batchi in range(points.shape[0]):
                     rect[batchi, i, j, k] = confs[batchi][msk[batchi]].mean()
+                    xyz_start[(batchi, i, j, k)]=[x, y, z]
+                    xyz_end[(batchi, i, j, k)]=[x+Xstep, y+Ystep ,z+Zstep]                  
                     points_per_region[(batchi, i, j, k)] = msk
-    return rect, points_per_region
+    return rect, points_per_region, xyz_start, xyz_end
 
 def draw_confidence(conf_rect):
     import matplotlib.pyplot as plt
@@ -43,16 +47,16 @@ def draw_confidence(conf_rect):
     ax = fig.add_subplot(111, projection='3d')
 
     colors = np.empty((*conf_rect.shape, 4), dtype=object)
-    for i in range(10):
-        for j in range(10):
-            for k in range(10):
+    for i in range(conf_rect.shape[0]):
+        for j in range(conf_rect.shape[1]):
+            for k in range(conf_rect.shape[2]):
                 if not torch.isnan(conf_rect[i, j, k]):
                     colors[i, j, k] = [1, 0, 0, conf_rect[i, j, k].item()]
 
     ax.voxels(torch.logical_not(torch.isnan(conf_rect)), facecolors=colors, edgecolor='k')
-    for i in range(10):
-        for j in range(10):
-            for k in range(10):
+    for i in range(conf_rect.shape[0]):
+        for j in range(conf_rect.shape[1]):
+            for k in range(conf_rect.shape[2]):
                 if not torch.isnan(conf_rect[i, j, k]):
                     ax.text(i, j, k, int(conf_rect[i, j, k].item()*100), color='blue')
     plt.show()

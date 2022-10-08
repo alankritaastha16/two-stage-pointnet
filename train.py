@@ -6,6 +6,7 @@ dataset).
 import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument('dataset', choices=['SemanticKITTI', 'ICCV17ShapeNetSeg', 'EricyiShapeNetSeg', 'Stanford3d'])
+parser.add_argument('split', choices=['first', 'second'])
 parser.add_argument('--datadir', default='/data')
 parser.add_argument('--epochs', default=100, type=int)
 parser.add_argument('--npoints', default=2500, type=int)
@@ -13,7 +14,9 @@ parser.add_argument('--feature-transform', action='store_true')
 parser.add_argument('--cache', action='store_true')
 parser.add_argument('--small', action='store_true')
 parser.add_argument('--big-model')
+parser.add_argument('--size', default=6, type=int)
 parser.add_argument('--region-strategy')
+parser.add_argument('--conf',default=0.5,type=float)
 args = parser.parse_args()
     
 from torchinfo import summary
@@ -32,6 +35,15 @@ print('Using', device)
 
 # load the dataset with augmentation
 
+def MaxPoints(n):
+    def f(P, S):
+        if len(S) > n:
+            ix = np.random.choice(len(S), n, False)
+            P = P[:, ix]
+            S = S[ix]
+        return P, S
+    return f
+
 if args.big_model:
     big_model = torch.load(args.big_model)
 
@@ -40,15 +52,19 @@ if args.small:
         region_clip = myaug.RandomClip(0.1)
     if args.region_strategy == 'hardest-region':
         region_clip = myaug.HardestRegion(0.1, big_model)
+    if args.region_strategy == 'lessconf-points':
+        region_clip = myaug.pointclouds_lessconf(big_model, args.conf)
     aug = pn.aug.Compose(
+        #MaxPoints(10000),
         pn.aug.Normalize(),
-        region_clip,
         pn.aug.Resample(args.npoints),
         pn.aug.Jitter(),
         pn.aug.RandomRotation('Z', 0, 2*np.pi),
+        region_clip,
     )
 else:
     aug = pn.aug.Compose(
+       # MaxPoints(10000),
         pn.aug.Resample(args.npoints),
         pn.aug.Normalize(),
         pn.aug.Jitter(),
@@ -59,12 +75,21 @@ tr = tr(args.datadir, 'train', None if args.cache else aug)
 K = tr.nclasses
 if args.cache:
     tr = pn.data.Cache(tr, aug)
+
+rand = np.random.RandomState(123)
+ix = rand.choice(len(tr), len(tr), False)
+if args.split == 'first':
+	ix = ix[:len(ix)//2]
+else:
+	ix = ix[len(ix)//2:]
+tr = torch.utils.data.Subset(tr, ix)
+
 #tr = torch.utils.data.Subset(tr, range(10))  # DEBUG
-num_workers = 0 if args.region_strategy == 'hardest-region' else 4
-tr = DataLoader(tr, 32, True, num_workers=num_workers, pin_memory=True)
+num_workers = 0 if args.region_strategy == 'hardest-region' or 'lessconf-points' else 4
+tr = DataLoader(tr, 1, True, num_workers=num_workers, pin_memory=True)
 
 # create the model
-model = pointnet.PointNetSeg(K).to(device)
+model = pointnet.PointNetSeg(K, args.size).to(device)
 summary(model)
 #print('model output:', model(torch.ones((10, 3, 2500), device=device))[0].shape)
 
@@ -74,13 +99,20 @@ ce_loss = torch.nn.CrossEntropyLoss()
 # train the model
 model.train()
 for epoch in range(args.epochs):
-    KK = []
-    KK_pred = []
+    kk = torch.arange(K, device=device)[:, None]
+    #KK = []
+    #KK_pred = []
+    cmii = torch.tensor([0]*K, device=device)
+    cmij = torch.tensor([0]*K, device=device)
+    cmki = torch.tensor([0]*K, device=device)
     print(f'* Epoch {epoch+1} / {args.epochs}')
     tic = time()
     avg_loss = 0
     avg_acc = 0
     for P, Y in tqdm(tr):
+        if P.shape[2] == 0:
+            #print('No points - skip')
+            continue
         P = P.to(device)
         Y = Y.to(device)
 
@@ -101,17 +133,24 @@ for epoch in range(args.epochs):
             #print(colors)
             #print(k_pred)'''
         avg_acc += float((Y == K_pred).float().mean()) / len(tr)
-        KK.append(Y.view(-1))
-        KK_pred.append(K_pred.detach().view(-1))
+        #KK.append(Y.view(-1).cpu())
+        #KK_pred.append(K_pred.detach().view(-1).cpu())
+        y = Y.view(-1)
+        ypred = K_pred.detach().view(-1)
+        cmii += torch.logical_and(ypred == kk, y == kk).sum(1)
+        cmij += torch.logical_and(ypred == kk, y != kk).sum(1)
+        cmki += torch.logical_and(ypred != kk, y == kk).sum(1)
+
     toc = time()
     print(f'- {toc-tic:.1f}s - Loss: {avg_loss} - Acc: {avg_acc}')
-    KK = torch.cat(KK)
-    KK_pred = torch.cat(KK_pred)
-    #print('IoU:', pn.metrics.IoU(KK_pred, KK, K).cpu().numpy())
-    print('mIoU:', pn.metrics.mIoU(KK_pred, KK, K).cpu().numpy())
+    #KK = torch.cat(KK)
+    #KK_pred = torch.cat(KK_pred)
+    #print('IoU:', pn.metrics.IoU(KK_pred, KK, K).numpy())
+    mIoU = (cmii / (cmii + cmij + cmki)).mean()
+    print('mIoU:', mIoU.cpu())
 
 if args.small:
-    fname = f'model-{args.dataset}-small-{args.region_strategy}.pth'
+    fname = f'model-{args.size}-{args.dataset}-small-{args.region_strategy}-{args.conf}.pth'
 else:
-    fname = f'model-{args.dataset}.pth'
-torch.save(model, fname)
+    fname = f'model-{args.size}-{args.dataset}.pth'
+torch.save(model.cpu(), fname)
